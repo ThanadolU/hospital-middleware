@@ -1,0 +1,11 @@
+.DS_Store
+.env
+*.env
+!example.env
+
+# Build output
+/bin/
+/tmp/
+
+# Test output
+coverage.out
