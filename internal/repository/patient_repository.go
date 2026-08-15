@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/ThanadolU/hospital-middleware/internal/models"
 )
@@ -28,7 +29,21 @@ type PatientRepository interface {
 	// set it returns all of that hospital's patients — the brief asks for all
 	// matches, so there is no implicit page limit to truncate them.
 	Search(ctx context.Context, hospitalID uuid.UUID, req models.SearchPatientRequest) ([]models.Patient, error)
+
+	// Upsert stores a patient under hospitalID, updating the existing record
+	// when one already carries the same national ID or passport ID within that
+	// hospital. It reports whether a new record was created.
+	//
+	// patient.HospitalID is ignored: the scope comes from the parameter, so a
+	// record fetched from an upstream that named some other hospital cannot
+	// write itself into it.
+	Upsert(ctx context.Context, hospitalID uuid.UUID, patient *models.Patient) (created bool, err error)
 }
+
+// ErrNoIdentifier is returned when a patient has neither identifier, so there
+// is no key to match an existing record on. The schema enforces the same rule;
+// this catches it before the round trip and with a clearer message.
+var ErrNoIdentifier = errors.New("repository: patient has neither a national ID nor a passport ID")
 
 type patientRepository struct {
 	db *gorm.DB
@@ -117,4 +132,82 @@ func escapeLike(s string) string {
 		`_`, `\_`,
 	)
 	return replacer.Replace(s)
+}
+
+// Upsert matches on either identifier within the hospital, then updates or
+// inserts accordingly.
+//
+// A plain ON CONFLICT will not do here. There are two partial unique indexes —
+// one per identifier — and PostgreSQL infers a single arbiter per statement, so
+// a record carrying both a national ID and a passport ID could conflict on the
+// index that was not named and fail. Matching first inside a transaction
+// handles both keys, at the cost of a round trip that a sync path can afford.
+func (r *patientRepository) Upsert(
+	ctx context.Context,
+	hospitalID uuid.UUID,
+	patient *models.Patient,
+) (bool, error) {
+	if hospitalID == uuid.Nil {
+		return false, ErrHospitalScopeRequired
+	}
+	if patient == nil {
+		return false, errors.New("repository: patient is required")
+	}
+
+	nationalID := strings.TrimSpace(patient.NationalID)
+	passportID := strings.TrimSpace(patient.PassportID)
+	if nationalID == "" && passportID == "" {
+		return false, ErrNoIdentifier
+	}
+
+	// The scope is stamped from the parameter, never from the incoming record.
+	patient.HospitalID = hospitalID
+
+	created := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Locked so two concurrent syncs of the same patient cannot both miss
+		// the existing row and then race to insert it.
+		query := tx.Model(&models.Patient{}).
+			Where("hospital_id = ?", hospitalID).
+			Clauses(clause.Locking{Strength: "UPDATE"})
+
+		switch {
+		case nationalID != "" && passportID != "":
+			query = query.Where("national_id = ? OR passport_id = ?", nationalID, passportID)
+		case nationalID != "":
+			query = query.Where("national_id = ?", nationalID)
+		default:
+			query = query.Where("passport_id = ?", passportID)
+		}
+
+		var existing models.Patient
+		switch err := query.First(&existing).Error; {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			created = true
+			if err := tx.Create(patient).Error; err != nil {
+				return fmt.Errorf("repository: create patient: %w", err)
+			}
+			return nil
+		case err != nil:
+			return fmt.Errorf("repository: find patient: %w", err)
+		}
+
+		// Keep the identity of the row we matched; everything else comes from
+		// upstream. Assigning the id explicitly stops GORM treating this as an
+		// insert of a record that happens to carry a primary key.
+		patient.ID = existing.ID
+		patient.CreatedAt = existing.CreatedAt
+		if err := tx.Model(&models.Patient{}).
+			Where("id = ?", existing.ID).
+			Select("*").
+			Omit("id", "created_at").
+			Updates(patient).Error; err != nil {
+			return fmt.Errorf("repository: update patient: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return created, nil
 }

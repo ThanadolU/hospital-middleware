@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 	"github.com/ThanadolU/hospital-middleware/internal/auth"
 	"github.com/ThanadolU/hospital-middleware/internal/database"
 	"github.com/ThanadolU/hospital-middleware/internal/handler"
+	"github.com/ThanadolU/hospital-middleware/internal/his"
 	"github.com/ThanadolU/hospital-middleware/internal/repository"
 	"github.com/ThanadolU/hospital-middleware/internal/routes"
 	"github.com/ThanadolU/hospital-middleware/internal/service"
@@ -77,7 +79,7 @@ func run(log *slog.Logger) error {
 		repository.NewHospitalRepository(db),
 		tokens,
 	)
-	patientService := service.NewPatientService(repository.NewPatientRepository(db))
+	patientService := service.NewPatientService(repository.NewPatientRepository(db), hisClient(log))
 
 	router := routes.NewRouter(routes.Dependencies{
 		Staff:   handler.NewStaffHandler(authService, log),
@@ -105,10 +107,23 @@ func serve(log *slog.Logger, server *http.Server) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", server.Addr, err)
+	}
+	return serveUntil(ctx, log, server, listener)
+}
+
+// serveUntil serves on listener until ctx is cancelled, then drains.
+//
+// Split from serve so the drain can be tested by cancelling a context, rather
+// than by sending the test process a real SIGTERM — which would take the whole
+// test binary down if the signal handler were not yet registered.
+func serveUntil(ctx context.Context, log *slog.Logger, server *http.Server, listener net.Listener) error {
 	errs := make(chan error, 1)
 	go func() {
-		log.Info("listening", "addr", server.Addr)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Info("listening", "addr", listener.Addr().String())
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- fmt.Errorf("serve: %w", err)
 			return
 		}
@@ -182,4 +197,30 @@ func tokenTTL() time.Duration {
 		return auth.DefaultTokenTTL
 	}
 	return time.Duration(hours) * time.Hour
+}
+
+// hisClient builds the Hospital A client, or returns nil when the upstream is
+// not configured.
+//
+// Deliberately not fatal, unlike DATABASE_URL and JWT_SECRET. Those two are
+// required for the service to do anything at all; a missing HIS only disables
+// the sync endpoint, which then answers 503 rather than taking search, login
+// and staff creation down with it. The condition is logged at WARN so a
+// misconfigured deployment is visible rather than silent.
+func hisClient(log *slog.Logger) his.Client {
+	cfg, err := his.ConfigFromEnv()
+	if err != nil {
+		log.Warn("HIS is not configured; patient sync will be unavailable",
+			"variable", his.BaseURLEnv, "error", err)
+		return nil
+	}
+
+	client, err := his.NewHospitalA(cfg)
+	if err != nil {
+		log.Warn("HIS configuration is invalid; patient sync will be unavailable", "error", err)
+		return nil
+	}
+
+	log.Info("HIS configured", "base_url", cfg.BaseURL)
+	return client
 }

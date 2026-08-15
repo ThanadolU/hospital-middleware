@@ -22,6 +22,11 @@ const (
 	PathStaffLogin    = "/staff/login"
 	PathPatientSearch = "/patient/search"
 	PathHealth        = "/health"
+
+	// PathPatientSync is not named by the brief. It is the one endpoint the
+	// HIS client is reachable through, without which the integration exists
+	// only in tests. Kept in the same unprefixed shape as the brief's paths.
+	PathPatientSync = "/patient/sync"
 )
 
 // Dependencies are the collaborators the routes need.
@@ -48,6 +53,10 @@ func Register(r gin.IRouter, deps Dependencies) {
 	// that token and never from the query string.
 	authenticated := r.Group("", middleware.RequireAuth(deps.Tokens))
 	authenticated.GET(PathPatientSearch, deps.Patient.Search)
+
+	// Ingesting from the HIS is scoped the same way: a staff member can only
+	// pull records into their own hospital.
+	authenticated.POST(PathPatientSync, deps.Patient.Sync)
 }
 
 // NewRouter builds a fully configured router.

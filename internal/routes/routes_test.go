@@ -1,7 +1,9 @@
 package routes_test
 
 import (
+	"maps"
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -18,6 +20,8 @@ const (
 	briefStaffCreate   = "/staff/create"
 	briefStaffLogin    = "/staff/login"
 	briefPatientSearch = "/patient/search"
+	briefHealth        = "/health"
+	briefPatientSync   = "/patient/sync"
 )
 
 // v1's single biggest avoidable loss: it shipped /api/auth/register,
@@ -39,6 +43,21 @@ func TestRegisteredPathsMatchTheBriefExactly(t *testing.T) {
 	} {
 		assert.Contains(t, registered, required, "the brief names %q; it is not registered", required)
 	}
+
+	// The whole table, not just the required subset. Asserting only presence
+	// would let an accidental extra route — a debug handler, a duplicate under
+	// a prefix — ship unnoticed, which is exactly the class of mistake this
+	// file exists to catch. Anything added deliberately has to be added here
+	// too, which is the point: it forces the decision to be visible.
+	assert.ElementsMatch(t, []string{
+		http.MethodPost + " " + briefStaffCreate,
+		http.MethodPost + " " + briefStaffLogin,
+		http.MethodGet + " " + briefPatientSearch,
+		http.MethodGet + " " + briefHealth,
+		// Not named by the brief: the only route the HIS client is reachable
+		// through. See routes.PathPatientSync.
+		http.MethodPost + " " + briefPatientSync,
+	}, slices.Collect(maps.Keys(registered)))
 
 	assert.Equal(t, briefStaffCreate, routes.PathStaffCreate)
 	assert.Equal(t, briefStaffLogin, routes.PathStaffLogin)
