@@ -2,12 +2,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -89,10 +92,46 @@ func run(log *slog.Logger) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Info("listening", "addr", server.Addr)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("serve: %w", err)
+	return serve(log, server)
+}
+
+// serve runs the server until the process is asked to stop, then drains.
+//
+// docker compose down sends SIGTERM and waits ten seconds before SIGKILL, so
+// without this an in-flight patient search is severed mid-response. Shutdown
+// stops accepting new connections and lets the running handlers finish; the
+// deferred pool close then runs with no queries left against it.
+func serve(log *slog.Logger, server *http.Server) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errs := make(chan error, 1)
+	go func() {
+		log.Info("listening", "addr", server.Addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errs <- fmt.Errorf("serve: %w", err)
+			return
+		}
+		errs <- nil
+	}()
+
+	select {
+	case err := <-errs:
+		// Failed before any signal arrived — a bound port, most often.
+		return err
+	case <-ctx.Done():
 	}
+
+	log.Info("shutting down")
+	// Bounded, and shorter than compose's ten-second grace period: a drain that
+	// outlives the grace period is indistinguishable from no drain at all.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shutdown: %w", err)
+	}
+	log.Info("stopped")
 	return nil
 }
 

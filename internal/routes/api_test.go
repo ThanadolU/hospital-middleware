@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -319,6 +320,40 @@ func TestPatientSearch_RequiresAuthentication(t *testing.T) {
 
 // The API-level restatement of the isolation property: the token's hospital
 // decides what a caller sees, and no query parameter can change it.
+// Invalid criteria are rejected before any query runs, and the rejection is a
+// 400 rather than a 500 — the caller sent something unusable, which is not a
+// server failure. Exercised through the real router so the binding tags, the
+// handler and the route are all in the path.
+func TestPatientSearch_RejectsInvalidQueryParameters(t *testing.T) {
+	api := newTestAPI(t)
+	hospital := testsupport.NewHospital(t, api.db, "Hospital A")
+	testsupport.NewStaff(t, api.db, hospital.ID, "somchai", testPassword)
+	testsupport.NewPatient(t, api.db, hospital.ID)
+
+	token := api.login(t, "Hospital A", "somchai")
+
+	for _, query := range []string{
+		"?date_of_birth=17-05-1990",
+		"?date_of_birth=not-a-date",
+		"?national_id=" + strings.Repeat("9", 21),
+		"?email=" + strings.Repeat("a", 255),
+	} {
+		t.Run(query, func(t *testing.T) {
+			recorder := api.do(t, http.MethodGet, routes.PathPatientSearch+query, nil, token)
+
+			require.Equal(t, http.StatusBadRequest, recorder.Code)
+			assert.Contains(t, decode(t, recorder)["error"], "invalid search parameters")
+		})
+	}
+
+	// A well-formed date must still be accepted, so the cases above prove the
+	// format is checked rather than that dates are rejected outright.
+	t.Run("a valid date of birth is accepted", func(t *testing.T) {
+		recorder := api.do(t, http.MethodGet, routes.PathPatientSearch+"?date_of_birth=1990-05-17", nil, token)
+		assert.Equal(t, http.StatusOK, recorder.Code)
+	})
+}
+
 func TestPatientSearch_ReturnsOnlyTheTokenHospitalsPatients(t *testing.T) {
 	api := newTestAPI(t)
 

@@ -1,0 +1,98 @@
+# A clean clone should need `docker compose up` and nothing else.
+#
+#   docker compose up --build
+#   curl localhost:8081/health
+#
+# Only nginx publishes a port. The application, the database and the mock HIS
+# are reachable only from inside the compose network, so the edge is the single
+# way in — which is the point of putting a reverse proxy in front.
+
+name: hospital-middleware
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: hospital_middleware
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # -U and -d matter: bare pg_isready reports ready while the init scripts
+      # are still running, and the app would then race the database's own setup.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d hospital_middleware"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # One-shot. Applies migrations and inserts the hospitals, then exits 0.
+  # Without it, POST /staff/create answers 400 "unknown hospital" on a fresh
+  # volume and the stack looks broken on first contact.
+  seed:
+    build: .
+    # entrypoint, not command: the image's ENTRYPOINT is the api binary, so a
+    # command here would be passed to it as arguments instead of replacing it.
+    entrypoint: ["/usr/local/bin/seed"]
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/hospital_middleware?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/hospital_middleware?sslmode=disable
+      # Local-development value, and deliberately explicit rather than a
+      # fallback inside the application: cmd/api still refuses to boot when
+      # JWT_SECRET is unset. Export your own to override it here.
+      JWT_SECRET: ${JWT_SECRET:-local-development-secret-do-not-use-in-production}
+      PORT: "8000"
+      GIN_MODE: release
+      # Wired so the integration target is reachable. cmd/api does not call it
+      # yet — the brief's endpoint list has no HIS fetch — but cmd/mock-his and
+      # internal/his speak the same contract, verified in cmd/mock-his tests.
+      HIS_HOSPITAL_A_BASE_URL: http://mock-his:8082
+    depends_on:
+      db:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      # /health pings the database, so this reports the dependency too, not
+      # merely that a process is alive and accepting connections.
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  mock-his:
+    build: .
+    entrypoint: ["/usr/local/bin/mock-his"]
+    environment:
+      PORT: "8082"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8082/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "8081:80"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

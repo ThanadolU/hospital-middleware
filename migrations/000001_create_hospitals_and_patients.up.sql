@@ -6,7 +6,21 @@
 -- Pinned to public rather than the current schema: an extension installed into
 -- a transient schema disappears with it, and gin_trgm_ops must stay resolvable
 -- for every connection regardless of its search_path.
-CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
+--
+-- IF NOT EXISTS is checked and acted on in two steps, so it is not atomic: two
+-- sessions migrating at the same moment can both find the extension absent and
+-- then collide on pg_extension_name_index. That happens when `go test ./...`
+-- runs packages in parallel, and would happen again with more than one replica
+-- booting at once. The exception handler opens a subtransaction, so losing the
+-- race is absorbed here instead of aborting the whole migration.
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
+EXCEPTION
+    WHEN unique_violation OR duplicate_object THEN
+        NULL;
+END
+$$;
 
 CREATE TABLE hospitals (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),

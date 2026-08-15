@@ -71,13 +71,7 @@ func TestMigrate_AppliesAndIsIdempotent(t *testing.T) {
 	require.NoError(t, Migrate(db), "second apply must be a no-op, not an error")
 
 	for _, table := range []string{"hospitals", "patients"} {
-		var exists bool
-		err := db.QueryRow(
-			`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)`,
-			table,
-		).Scan(&exists)
-		require.NoError(t, err)
-		assert.True(t, exists, "migration should have created %q", table)
+		assert.True(t, tableExists(t, db, table), "migration should have created %q", table)
 	}
 }
 
@@ -96,12 +90,22 @@ func TestRollback_UndoesTheLatestMigrationAndCanReapply(t *testing.T) {
 	assert.True(t, tableExists(t, db, "staffs"))
 }
 
+// tableExists reports whether the table exists **in this test's own schema**.
+//
+// The table_schema filter is what makes the answer meaningful. information_schema
+// spans every schema the connection can see, and each test runs in a private one,
+// so an unfiltered query answers "does any package have a staffs table right now"
+// — which is intermittently true for reasons that have nothing to do with this
+// test, and would just as happily report a rollback succeeded when it had not.
 func tableExists(t *testing.T, db *sql.DB, name string) bool {
 	t.Helper()
 
 	var exists bool
 	err := db.QueryRow(
-		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)`, name,
+		`SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_name = $1 AND table_schema = current_schema()
+		)`, name,
 	).Scan(&exists)
 	require.NoError(t, err)
 	return exists
