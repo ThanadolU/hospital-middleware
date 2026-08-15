@@ -128,7 +128,9 @@ func (c *HospitalA) SearchPatient(ctx context.Context, id string) (*models.Patie
 		// wrapped, so errors.Is(err, context.DeadlineExceeded) still answers.
 		return nil, &Error{Op: op, Kind: ErrUpstream, Err: err}
 	}
-	defer resp.Body.Close()
+	// Discarded deliberately: the body is either fully read below or being
+	// abandoned on an error path, and a close failure changes neither outcome.
+	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusOK:

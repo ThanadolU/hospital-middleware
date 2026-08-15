@@ -321,6 +321,8 @@ The only functions with no coverage are the five `main`/`run` entry points,
 which are process wiring exercised by `docker compose up` rather than by unit
 tests.
 
+`go vet ./...`, `gofmt -l .` and `golangci-lint run ./...` are all clean.
+
 Each test that needs PostgreSQL gets its own schema via `search_path`. Go runs
 packages in parallel, and they previously shared one database and truncated each
 other's fixtures — tests passed alone and failed together.
