@@ -56,7 +56,7 @@ sends can widen it.
 [`cmd/mock-his/`](cmd/mock-his). A client for Hospital A's
 `GET {base}/patient/search/{id}`, with upstream failures classified rather than
 collapsed. The mock's tests drive the *real* client against it, so the stub
-cannot drift from the contract. Reachable at `POST /patient/sync`.
+cannot drift from the contract.
 
 **The paths** — [`internal/routes/routes_test.go`](internal/routes/routes_test.go)
 asserts the registered route table is exactly the expected set, so an accidental
@@ -74,13 +74,10 @@ never sent to the client.
 | POST | `/staff/create` | none | create a staff account |
 | POST | `/staff/login` | none | exchange credentials for a JWT |
 | GET | `/patient/search` | Bearer | search patients in your hospital |
-| POST | `/patient/sync` | Bearer | pull a patient from the HIS and store it |
 | GET | `/health` | none | liveness, including database connectivity |
 
-The first three are the paths exactly as the brief names them, with no `/api` or
-`/v1` prefix. `/patient/sync` is not named by the brief — it is the route the
-HIS client is reachable through, without which the integration would exist only
-in tests. It follows the same unprefixed shape.
+These are the paths exactly as the brief names them, with no `/api` or `/v1`
+prefix, and they are the only routes the service registers besides `/health`.
 
 ### POST /staff/create
 
@@ -153,51 +150,6 @@ No match is an empty list, not an error.
 The hospital searched comes from the token and **nowhere else**. Supplying
 `?hospital_id=` or `?hospital=` cannot widen the scope; a test against a real
 database asserts this.
-
-### POST /patient/sync
-
-Requires `Authorization: Bearer <token>`. Fetches one patient from Hospital A's
-HIS and stores it under the caller's hospital.
-
-```json
-{"id": "1103700123456"}
-```
-
-`id` may be a national ID or a passport ID — the upstream accepts either in the
-same position, so one field covers both.
-
-| Status | When |
-| --- | --- |
-| 201 | fetched and stored as a new record |
-| 200 | fetched and merged into the existing record |
-| 400 | missing or unusable identifier |
-| 401 | missing, malformed, expired or wrongly signed token |
-| 404 | the HIS answered, and has no such patient |
-| 502 | the HIS could not be reached, or returned something unusable |
-| 503 | no HIS is configured for this deployment |
-
-```json
-{"data": { ...patient... }, "meta": {"created": true}}
-```
-
-Re-running is safe: a second sync of the same patient updates the existing
-record rather than creating a duplicate, matched on either identifier within
-the hospital.
-
-404 and 502 are deliberately distinct. An absence is not an outage, and the
-difference tells a caller whether retrying is worthwhile.
-
-The record is stamped with the caller's hospital, never with anything from the
-upstream payload — which carries no hospital identity at all. Two hospitals may
-each sync the same upstream patient and each gets its own record, because
-identifiers are unique per hospital rather than globally.
-
-```bash
-curl -X POST localhost:8081/patient/sync \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"id":"1103700123456"}'
-```
 
 ## Data model
 
@@ -318,8 +270,8 @@ includes `migrations`, where the tests assert every migration has both
 directions and contiguous versions, and `internal/testsupport`, whose schema
 isolation the rest of the suite depends on.
 
-Coverage is 72.2% of statements overall: middleware 92.1%, handler 91.5%, auth
-91.3%, his 89.3%, service 83.1%, routes 81.2%, repository 75.8%.
+Coverage is 68.9% of statements overall: middleware 92.1%, auth 91.3%, his
+89.3%, handler 87.5%, routes 80.0%, service 75.6%, repository 70.3%.
 
 Each test that needs PostgreSQL gets its own schema via `search_path`. Go runs
 packages in parallel, and they previously shared one database and truncated each
@@ -333,7 +285,7 @@ other's fixtures — tests passed alone and failed together.
 | `JWT_SECRET` | yes | — | minimum 32 bytes, no default |
 | `PORT` | no | `8000` | |
 | `JWT_TTL_HOURS` | no | `12` | ignored unless a positive integer |
-| `HIS_HOSPITAL_A_BASE_URL` | for `/patient/sync` | — | compose points this at `mock-his`; unset means sync answers 503 |
+| `HIS_HOSPITAL_A_BASE_URL` | for the HIS client | — | compose points this at `mock-his` |
 | `SEED_HOSPITALS` | no | `Hospital A,Hospital B` | comma-separated |
 | `TEST_DATABASE_URL` | tests only | — | see above |
 
@@ -342,12 +294,16 @@ worse than one that refuses to boot.
 
 ## Scope and trade-offs
 
-**`/patient/sync` is an endpoint the brief does not name.** The brief describes
-middleware that surfaces records from a Hospital Information System but lists no
-endpoint that fetches one, so the integration had nowhere to live. Rather than
-leave the client reachable only from tests, it is exposed at `/patient/sync`,
-scoped exactly like search. The alternative — shipping a HIS client no route
-calls — makes the integration unverifiable by a reviewer.
+**The HIS client is a library, not an endpoint.** The brief describes middleware
+that surfaces records from a Hospital Information System, but the endpoints it
+specifies contain no HIS fetch — so there is nowhere in the required API for one
+to sit. Adding a sync route would have meant inventing a requirement, so the API
+is exactly the three endpoints the brief names.
+
+The client, the Hospital A adapter and the mock are complete and tested against
+each other: `cmd/mock-his` drives the **real** client against the stub, so the
+two cannot drift apart, and the mock runs in compose. What is absent is a route,
+and that absence is deliberate.
 
 **Search returns every match, unpaginated.** The brief asks for all matches. A
 hospital with a very large patient table would want a cursor here.

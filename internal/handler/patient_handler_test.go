@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -16,7 +15,6 @@ import (
 	"github.com/ThanadolU/hospital-middleware/internal/handler"
 	"github.com/ThanadolU/hospital-middleware/internal/middleware"
 	"github.com/ThanadolU/hospital-middleware/internal/models"
-	"github.com/ThanadolU/hospital-middleware/internal/service"
 )
 
 // Handler-level tests for what the search handler alone decides: that it
@@ -29,13 +27,11 @@ import (
 // stubPatients records the scope it was called with, so a test can prove the
 // handler passed the token's hospital rather than anything from the query.
 type stubPatients struct {
-	patients    []models.Patient
-	err         error
-	calls       int
-	gotScope    uuid.UUID
-	gotRequest  models.SearchPatientRequest
-	gotSyncID   string
-	syncCreated bool
+	patients   []models.Patient
+	err        error
+	calls      int
+	gotScope   uuid.UUID
+	gotRequest models.SearchPatientRequest
 }
 
 func (s *stubPatients) Search(_ context.Context, hospitalID uuid.UUID, req models.SearchPatientRequest) ([]models.Patient, error) {
@@ -43,19 +39,6 @@ func (s *stubPatients) Search(_ context.Context, hospitalID uuid.UUID, req model
 	s.gotScope = hospitalID
 	s.gotRequest = req
 	return s.patients, s.err
-}
-
-func (s *stubPatients) SyncFromHIS(_ context.Context, hospitalID uuid.UUID, id string) (*models.Patient, bool, error) {
-	s.calls++
-	s.gotScope = hospitalID
-	s.gotSyncID = id
-	if s.err != nil {
-		return nil, false, s.err
-	}
-	if len(s.patients) == 0 {
-		return &models.Patient{}, s.syncCreated, nil
-	}
-	return &s.patients[0], s.syncCreated, nil
 }
 
 // searchWithScope drives the handler with an authenticated hospital already in
@@ -179,105 +162,4 @@ func longString(n int) string {
 		out[i] = 'a'
 	}
 	return string(out)
-}
-
-// syncWithScope drives the sync handler with an authenticated hospital already
-// in the context, as RequireAuth would have left it.
-func syncWithScope(t *testing.T, h *handler.PatientHandler, scope uuid.UUID, body string) *httptest.ResponseRecorder {
-	t.Helper()
-
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/patient/sync", strings.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
-	if scope != uuid.Nil {
-		c.Set(middleware.ContextHospitalID, scope)
-	}
-
-	h.Sync(c)
-	return recorder
-}
-
-// Same fail-closed rule as search: without an authenticated hospital the
-// handler must refuse rather than ingest into an unscoped record.
-func TestSync_WithoutAnAuthenticatedHospitalIs401(t *testing.T) {
-	patients := &stubPatients{}
-	h := handler.NewPatientHandler(patients, discardLogger())
-
-	recorder := syncWithScope(t, h, uuid.Nil, `{"id":"1103700123456"}`)
-
-	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
-	assert.Zero(t, patients.calls, "the sync must not run without a hospital scope")
-}
-
-func TestSync_MapsServiceErrorsToStatusCodes(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want int
-	}{
-		{"absent upstream", service.ErrPatientNotFoundUpstream, http.StatusNotFound},
-		{"upstream unavailable", service.ErrUpstreamUnavailable, http.StatusBadGateway},
-		{"no HIS configured", service.ErrHISNotConfigured, http.StatusServiceUnavailable},
-		{"unusable identifier", service.ErrInvalidPatientID, http.StatusBadRequest},
-		{"unexpected failure", assert.AnError, http.StatusInternalServerError},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			h := handler.NewPatientHandler(&stubPatients{err: tc.err}, discardLogger())
-
-			recorder := syncWithScope(t, h, uuid.New(), `{"id":"1103700123456"}`)
-
-			assert.Equal(t, tc.want, recorder.Code)
-			// Whatever failed, its detail must not reach the client.
-			assert.NotContains(t, recorder.Body.String(), tc.err.Error())
-		})
-	}
-}
-
-func TestSync_RejectsAMalformedOrEmptyBody(t *testing.T) {
-	for _, body := range []string{`{"id":`, `{}`, `{"id":""}`, ``} {
-		patients := &stubPatients{}
-		h := handler.NewPatientHandler(patients, discardLogger())
-
-		recorder := syncWithScope(t, h, uuid.New(), body)
-
-		assert.Equal(t, http.StatusBadRequest, recorder.Code, "body %q", body)
-		assert.Zero(t, patients.calls, "an unusable body must not reach the service")
-	}
-}
-
-// A new record is 201; a re-sync that merged into an existing one is 200. The
-// distinction is what tells a caller whether anything was actually added.
-func TestSync_CreatedIs201AndMergedIs200(t *testing.T) {
-	for _, tc := range []struct {
-		created bool
-		want    int
-	}{{true, http.StatusCreated}, {false, http.StatusOK}} {
-		patients := &stubPatients{
-			patients:    []models.Patient{{NationalID: "1103700123456"}},
-			syncCreated: tc.created,
-		}
-		h := handler.NewPatientHandler(patients, discardLogger())
-
-		recorder := syncWithScope(t, h, uuid.New(), `{"id":"1103700123456"}`)
-
-		require.Equal(t, tc.want, recorder.Code)
-		assert.Contains(t, recorder.Body.String(), `"created":`)
-	}
-}
-
-// The identifier must be passed through untouched, and the scope must come
-// from the context rather than anything in the body.
-func TestSync_PassesTheIdentifierAndContextScope(t *testing.T) {
-	scope := uuid.New()
-	patients := &stubPatients{patients: []models.Patient{{NationalID: "AA1234567"}}}
-	h := handler.NewPatientHandler(patients, discardLogger())
-
-	recorder := syncWithScope(t, h, scope, `{"id":"AA1234567","hospital_id":"`+uuid.New().String()+`"}`)
-
-	require.Equal(t, http.StatusOK, recorder.Code)
-	assert.Equal(t, "AA1234567", patients.gotSyncID)
-	assert.Equal(t, scope, patients.gotScope, "the body widened the hospital scope")
 }

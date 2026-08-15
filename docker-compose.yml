@@ -61,9 +61,13 @@ services:
       JWT_SECRET: ${JWT_SECRET:-local-development-secret-do-not-use-in-production}
       PORT: "8000"
       GIN_MODE: release
-      # Wired so the integration target is reachable. cmd/api does not call it
-      # yet — the brief's endpoint list has no HIS fetch — but cmd/mock-his and
-      # internal/his speak the same contract, verified in cmd/mock-his tests.
+      # Configuration for the HIS client, and the address the mock serves on.
+      #
+      # No route calls the client: the brief's endpoint list contains no HIS
+      # fetch, and inventing one would be scope the brief did not ask for. The
+      # client, the Hospital A adapter and the mock are complete and tested
+      # against each other — cmd/mock-his drives the real client — so the
+      # integration is verifiable without an endpoint that was never specified.
       HIS_HOSPITAL_A_BASE_URL: http://mock-his:8082
     depends_on:
       db:

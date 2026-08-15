@@ -21,7 +21,6 @@ const (
 	briefStaffLogin    = "/staff/login"
 	briefPatientSearch = "/patient/search"
 	briefHealth        = "/health"
-	briefPatientSync   = "/patient/sync"
 )
 
 // v1's single biggest avoidable loss: it shipped /api/auth/register,
@@ -54,9 +53,6 @@ func TestRegisteredPathsMatchTheBriefExactly(t *testing.T) {
 		http.MethodPost + " " + briefStaffLogin,
 		http.MethodGet + " " + briefPatientSearch,
 		http.MethodGet + " " + briefHealth,
-		// Not named by the brief: the only route the HIS client is reachable
-		// through. See routes.PathPatientSync.
-		http.MethodPost + " " + briefPatientSync,
 	}, slices.Collect(maps.Keys(registered)))
 
 	assert.Equal(t, briefStaffCreate, routes.PathStaffCreate)

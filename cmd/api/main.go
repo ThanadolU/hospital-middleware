@@ -19,7 +19,6 @@ import (
 	"github.com/ThanadolU/hospital-middleware/internal/auth"
 	"github.com/ThanadolU/hospital-middleware/internal/database"
 	"github.com/ThanadolU/hospital-middleware/internal/handler"
-	"github.com/ThanadolU/hospital-middleware/internal/his"
 	"github.com/ThanadolU/hospital-middleware/internal/repository"
 	"github.com/ThanadolU/hospital-middleware/internal/routes"
 	"github.com/ThanadolU/hospital-middleware/internal/service"
@@ -79,7 +78,7 @@ func run(log *slog.Logger) error {
 		repository.NewHospitalRepository(db),
 		tokens,
 	)
-	patientService := service.NewPatientService(repository.NewPatientRepository(db), hisClient(log))
+	patientService := service.NewPatientService(repository.NewPatientRepository(db))
 
 	router := routes.NewRouter(routes.Dependencies{
 		Staff:   handler.NewStaffHandler(authService, log),
@@ -197,30 +196,4 @@ func tokenTTL() time.Duration {
 		return auth.DefaultTokenTTL
 	}
 	return time.Duration(hours) * time.Hour
-}
-
-// hisClient builds the Hospital A client, or returns nil when the upstream is
-// not configured.
-//
-// Deliberately not fatal, unlike DATABASE_URL and JWT_SECRET. Those two are
-// required for the service to do anything at all; a missing HIS only disables
-// the sync endpoint, which then answers 503 rather than taking search, login
-// and staff creation down with it. The condition is logged at WARN so a
-// misconfigured deployment is visible rather than silent.
-func hisClient(log *slog.Logger) his.Client {
-	cfg, err := his.ConfigFromEnv()
-	if err != nil {
-		log.Warn("HIS is not configured; patient sync will be unavailable",
-			"variable", his.BaseURLEnv, "error", err)
-		return nil
-	}
-
-	client, err := his.NewHospitalA(cfg)
-	if err != nil {
-		log.Warn("HIS configuration is invalid; patient sync will be unavailable", "error", err)
-		return nil
-	}
-
-	log.Info("HIS configured", "base_url", cfg.BaseURL)
-	return client
 }

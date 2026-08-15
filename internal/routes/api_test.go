@@ -2,7 +2,6 @@ package routes_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -20,8 +19,6 @@ import (
 
 	"github.com/ThanadolU/hospital-middleware/internal/auth"
 	"github.com/ThanadolU/hospital-middleware/internal/handler"
-	"github.com/ThanadolU/hospital-middleware/internal/his"
-	"github.com/ThanadolU/hospital-middleware/internal/models"
 	"github.com/ThanadolU/hospital-middleware/internal/repository"
 	"github.com/ThanadolU/hospital-middleware/internal/routes"
 	"github.com/ThanadolU/hospital-middleware/internal/service"
@@ -43,30 +40,6 @@ func init() { gin.SetMode(gin.TestMode) }
 type testAPI struct {
 	router *gin.Engine
 	db     *gorm.DB
-	his    *fakeHIS
-}
-
-// fakeHIS stands in for the Hospital Information System. The real client is
-// exercised against an httptest server in internal/his; here the point is the
-// route, the scoping and the persistence, so the upstream is a stub whose
-// answers a test can dictate.
-type fakeHIS struct {
-	patient *models.Patient
-	err     error
-	calls   int
-	lastID  string
-}
-
-func (f *fakeHIS) SearchPatient(_ context.Context, id string) (*models.Patient, error) {
-	f.calls++
-	f.lastID = id
-	if f.err != nil {
-		return nil, f.err
-	}
-	// Copied, so a test mutating the returned record cannot corrupt the stub
-	// and make a later assertion pass for the wrong reason.
-	clone := *f.patient
-	return &clone, nil
 }
 
 func newTestAPI(t *testing.T) testAPI {
@@ -81,9 +54,8 @@ func newTestAPI(t *testing.T) testAPI {
 	hospitalRepo := repository.NewHospitalRepository(db)
 	patientRepo := repository.NewPatientRepository(db)
 
-	hisStub := &fakeHIS{}
 	authService := service.NewAuthService(staffRepo, hospitalRepo, tokens)
-	patientService := service.NewPatientService(patientRepo, hisStub)
+	patientService := service.NewPatientService(patientRepo)
 
 	// Discard logs: these tests assert on responses, and handler logging is
 	// noise here.
@@ -95,8 +67,7 @@ func newTestAPI(t *testing.T) testAPI {
 			Patient: handler.NewPatientHandler(patientService, log),
 			Tokens:  tokens,
 		}),
-		db:  db,
-		his: hisStub,
+		db: db,
 	}
 }
 
@@ -428,162 +399,4 @@ func TestHealth(t *testing.T) {
 	recorder := api.do(t, http.MethodGet, routes.PathHealth, nil, "")
 	assert.Equal(t, http.StatusOK, recorder.Code)
 	assert.Equal(t, "ok", decode(t, recorder)["status"])
-}
-
-// ------------------------------------------------------------ patient sync
-
-func hisPatient() *models.Patient {
-	return &models.Patient{
-		FirstNameTH: "สมชาย", MiddleNameTH: "กลาง", LastNameTH: "ใจดี",
-		FirstNameEN: "Somchai", MiddleNameEN: "Klang", LastNameEN: "Jaidee",
-		DateOfBirth: time.Date(1990, 5, 17, 0, 0, 0, 0, time.UTC),
-		PatientHN:   "HN-000123",
-		NationalID:  "1103700123456",
-		PassportID:  "AA1234567",
-		PhoneNumber: "0812345678",
-		Email:       "somchai@example.com",
-		Gender:      "M",
-	}
-}
-
-func TestPatientSync_PullsFromTheHISAndPersists(t *testing.T) {
-	api := newTestAPI(t)
-	hospital := testsupport.NewHospital(t, api.db, "Hospital A")
-	testsupport.NewStaff(t, api.db, hospital.ID, "somchai", testPassword)
-	api.his.patient = hisPatient()
-
-	token := api.login(t, "Hospital A", "somchai")
-
-	recorder := api.do(t, http.MethodPost, routes.PathPatientSync,
-		gin.H{"id": "1103700123456"}, token)
-
-	require.Equal(t, http.StatusCreated, recorder.Code, recorder.Body.String())
-	assert.Equal(t, 1, api.his.calls)
-	assert.Equal(t, "1103700123456", api.his.lastID, "the identifier must reach the HIS unchanged")
-
-	data := decode(t, recorder)["data"].(map[string]any)
-	assert.Equal(t, "Somchai", data["first_name_en"])
-	assert.Equal(t, hospital.ID.String(), data["hospital_id"],
-		"the synced record must be stamped with the caller's hospital")
-
-	// It is actually persisted, not merely echoed: it comes back from search.
-	found := api.do(t, http.MethodGet, routes.PathPatientSearch+"?national_id=1103700123456", nil, token)
-	require.Equal(t, http.StatusOK, found.Code)
-	assert.Equal(t, float64(1), decode(t, found)["meta"].(map[string]any)["total"])
-}
-
-// Syncing the same patient twice must update the existing record rather than
-// creating a second one — the endpoint is expected to be safe to re-run.
-func TestPatientSync_IsIdempotent(t *testing.T) {
-	api := newTestAPI(t)
-	hospital := testsupport.NewHospital(t, api.db, "Hospital A")
-	testsupport.NewStaff(t, api.db, hospital.ID, "somchai", testPassword)
-	api.his.patient = hisPatient()
-
-	token := api.login(t, "Hospital A", "somchai")
-	body := gin.H{"id": "1103700123456"}
-
-	first := api.do(t, http.MethodPost, routes.PathPatientSync, body, token)
-	require.Equal(t, http.StatusCreated, first.Code)
-
-	// Upstream now reports a corrected phone number.
-	updated := hisPatient()
-	updated.PhoneNumber = "0899999999"
-	api.his.patient = updated
-
-	second := api.do(t, http.MethodPost, routes.PathPatientSync, body, token)
-	require.Equal(t, http.StatusOK, second.Code, "a re-sync is an update, not a creation")
-	assert.Equal(t, false, decode(t, second)["meta"].(map[string]any)["created"])
-
-	found := api.do(t, http.MethodGet, routes.PathPatientSearch+"?national_id=1103700123456", nil, token)
-	body2 := decode(t, found)
-	require.Equal(t, float64(1), body2["meta"].(map[string]any)["total"], "the re-sync duplicated the patient")
-	assert.Equal(t, "0899999999", body2["data"].([]any)[0].(map[string]any)["phone_number"],
-		"the update did not take")
-}
-
-// The same isolation rule as search: a sync writes into the caller's hospital
-// and cannot be seen from another one.
-func TestPatientSync_WritesOnlyIntoTheCallersHospital(t *testing.T) {
-	api := newTestAPI(t)
-	hospitalA := testsupport.NewHospital(t, api.db, "Hospital A")
-	hospitalB := testsupport.NewHospital(t, api.db, "Hospital B")
-	testsupport.NewStaff(t, api.db, hospitalA.ID, "staff-a", testPassword)
-	testsupport.NewStaff(t, api.db, hospitalB.ID, "staff-b", testPassword)
-	api.his.patient = hisPatient()
-
-	tokenA := api.login(t, "Hospital A", "staff-a")
-	tokenB := api.login(t, "Hospital B", "staff-b")
-
-	require.Equal(t, http.StatusCreated,
-		api.do(t, http.MethodPost, routes.PathPatientSync, gin.H{"id": "1103700123456"}, tokenA).Code)
-
-	// B must not see A's freshly synced patient.
-	fromB := api.do(t, http.MethodGet, routes.PathPatientSearch, nil, tokenB)
-	require.Equal(t, http.StatusOK, fromB.Code)
-	assert.Equal(t, float64(0), decode(t, fromB)["meta"].(map[string]any)["total"],
-		"a sync leaked across the hospital boundary")
-
-	// And B syncing the same upstream patient creates its own copy, because
-	// identifiers are unique per hospital rather than globally.
-	require.Equal(t, http.StatusCreated,
-		api.do(t, http.MethodPost, routes.PathPatientSync, gin.H{"id": "1103700123456"}, tokenB).Code)
-
-	fromBAgain := api.do(t, http.MethodGet, routes.PathPatientSearch, nil, tokenB)
-	assert.Equal(t, float64(1), decode(t, fromBAgain)["meta"].(map[string]any)["total"])
-}
-
-func TestPatientSync_MapsUpstreamFailures(t *testing.T) {
-	tests := []struct {
-		name    string
-		hisErr  error
-		want    int
-		message string
-	}{
-		{"patient absent upstream", his.ErrPatientNotFound, http.StatusNotFound, "not found"},
-		{"upstream unreachable", his.ErrUpstream, http.StatusBadGateway, "unavailable"},
-		{"unusable upstream body", his.ErrInvalidResponse, http.StatusBadGateway, "unavailable"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			api := newTestAPI(t)
-			hospital := testsupport.NewHospital(t, api.db, "Hospital A")
-			testsupport.NewStaff(t, api.db, hospital.ID, "somchai", testPassword)
-			api.his.err = tc.hisErr
-
-			token := api.login(t, "Hospital A", "somchai")
-			recorder := api.do(t, http.MethodPost, routes.PathPatientSync, gin.H{"id": "999"}, token)
-
-			assert.Equal(t, tc.want, recorder.Code)
-			assert.Contains(t, recorder.Body.String(), tc.message)
-			// Whatever failed upstream, its detail must not reach the client.
-			assert.NotContains(t, recorder.Body.String(), tc.hisErr.Error())
-		})
-	}
-}
-
-func TestPatientSync_RequiresAuthenticationAndAValidBody(t *testing.T) {
-	api := newTestAPI(t)
-	hospital := testsupport.NewHospital(t, api.db, "Hospital A")
-	testsupport.NewStaff(t, api.db, hospital.ID, "somchai", testPassword)
-	api.his.patient = hisPatient()
-
-	t.Run("no token is 401", func(t *testing.T) {
-		recorder := api.do(t, http.MethodPost, routes.PathPatientSync, gin.H{"id": "1103700123456"}, "")
-		assert.Equal(t, http.StatusUnauthorized, recorder.Code)
-		assert.Zero(t, api.his.calls, "an unauthenticated request must not reach the HIS")
-	})
-
-	token := api.login(t, "Hospital A", "somchai")
-
-	t.Run("missing id is 400", func(t *testing.T) {
-		assert.Equal(t, http.StatusBadRequest,
-			api.do(t, http.MethodPost, routes.PathPatientSync, gin.H{}, token).Code)
-	})
-
-	t.Run("empty id is 400", func(t *testing.T) {
-		assert.Equal(t, http.StatusBadRequest,
-			api.do(t, http.MethodPost, routes.PathPatientSync, gin.H{"id": ""}, token).Code)
-	})
 }

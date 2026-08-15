@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"errors"
 	"log/slog"
 	"net/http"
 
@@ -65,66 +64,4 @@ func (h *PatientHandler) Search(c *gin.Context) {
 		"data": patients,
 		"meta": gin.H{"total": len(patients)},
 	})
-}
-
-// syncRequest is the sync input: the identifier to fetch from the HIS. The
-// upstream accepts a national ID or a passport ID in the same position, so one
-// field covers both.
-type syncRequest struct {
-	ID string `json:"id" binding:"required,max=64"`
-}
-
-// Sync handles POST /patient/sync.
-//
-// It pulls one patient from the Hospital Information System and stores it
-// under the caller's hospital. The hospital is taken from the token: a staff
-// member can only ingest into their own hospital, which is the same isolation
-// rule the search path follows.
-func (h *PatientHandler) Sync(c *gin.Context) {
-	hospitalID, err := middleware.HospitalIDFrom(c)
-	if err != nil {
-		h.log.Error("patient sync reached without an authenticated hospital", "error", err)
-		respond(c, http.StatusUnauthorized, "authentication required")
-		return
-	}
-
-	var req syncRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		badRequest(c, "invalid request body")
-		return
-	}
-
-	patient, created, err := h.patients.SyncFromHIS(c.Request.Context(), hospitalID, req.ID)
-	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrPatientNotFoundUpstream):
-			// The HIS answered, and answered that it has no such patient.
-			respond(c, http.StatusNotFound, "patient not found in the hospital information system")
-		case errors.Is(err, service.ErrInvalidPatientID):
-			badRequest(c, "a patient identifier is required")
-		case errors.Is(err, service.ErrHISNotConfigured):
-			h.log.Error("patient sync attempted with no HIS client configured")
-			respond(c, http.StatusServiceUnavailable, "hospital information system is not configured")
-		case errors.Is(err, service.ErrUpstreamUnavailable):
-			// 502, not 500: the failure is upstream, and the distinction tells
-			// a caller whether retrying is worthwhile.
-			h.log.Error("request failed", "operation", "sync patient", "error", err)
-			respond(c, http.StatusBadGateway, "hospital information system is unavailable")
-		default:
-			h.log.Error("request failed", "operation", "sync patient", "error", err)
-			respond(c, http.StatusInternalServerError, "internal server error")
-		}
-		return
-	}
-
-	h.log.Info("patient synced",
-		"hospital_id", hospitalID.String(),
-		"created", created,
-	)
-
-	status := http.StatusOK
-	if created {
-		status = http.StatusCreated
-	}
-	c.JSON(status, gin.H{"data": patient, "meta": gin.H{"created": created}})
 }

@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ThanadolU/hospital-middleware/internal/auth"
-	"github.com/ThanadolU/hospital-middleware/internal/his"
 )
 
 // The wiring in run() needs a database and is covered end to end through
@@ -100,30 +99,6 @@ func TestTokenTTL(t *testing.T) {
 			assert.Equal(t, tc.want, tokenTTL())
 		})
 	}
-}
-
-// A missing HIS disables one endpoint; it must not stop the service booting,
-// because search, login and staff creation do not depend on it.
-func TestHISClient_ReturnsNilWhenUnconfigured(t *testing.T) {
-	t.Setenv(his.BaseURLEnv, "")
-
-	assert.Nil(t, hisClient(discardLogger()))
-}
-
-func TestHISClient_ReturnsNilOnAnUnusableBaseURL(t *testing.T) {
-	for _, invalid := range []string{"not-a-url", "ftp://hospital-a.example", "http://"} {
-		t.Run(invalid, func(t *testing.T) {
-			t.Setenv(his.BaseURLEnv, invalid)
-			assert.Nil(t, hisClient(discardLogger()), "an invalid base URL must not yield a client")
-		})
-	}
-}
-
-func TestHISClient_BuildsAClientWhenConfigured(t *testing.T) {
-	t.Setenv(his.BaseURLEnv, "http://mock-his:8082")
-
-	client := hisClient(discardLogger())
-	require.NotNil(t, client)
 }
 
 func TestLoadDotenv(t *testing.T) {
