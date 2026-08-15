@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/joho/godotenv"
+
 	"github.com/ThanadolU/hospital-middleware/internal/auth"
 	"github.com/ThanadolU/hospital-middleware/internal/database"
 	"github.com/ThanadolU/hospital-middleware/internal/handler"
@@ -29,6 +31,10 @@ func main() {
 }
 
 func run(log *slog.Logger) error {
+	if err := loadDotenv(log); err != nil {
+		return err
+	}
+
 	// Every secret and connection detail is required, with no fallback: a
 	// service that boots with a default secret is worse than one that refuses
 	// to boot at all.
@@ -88,6 +94,28 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("serve: %w", err)
 	}
 	return nil
+}
+
+// loadDotenv reads .env into the environment for local development.
+//
+// A missing file is not an error: in production the values arrive as real
+// environment variables and there is no .env to find. Any other read error is
+// returned rather than swallowed, because a .env that exists but cannot be
+// parsed would otherwise surface as a confusing "DATABASE_URL must be set".
+//
+// godotenv does not overwrite variables that are already set, so an explicit
+// environment always wins over the file.
+func loadDotenv(log *slog.Logger) error {
+	err := godotenv.Load()
+	switch {
+	case err == nil:
+		log.Info("loaded .env")
+		return nil
+	case errors.Is(err, os.ErrNotExist):
+		return nil
+	default:
+		return fmt.Errorf("load .env: %w", err)
+	}
 }
 
 func requiredEnv(key string) (string, error) {
