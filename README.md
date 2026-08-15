@@ -243,7 +243,6 @@ internal/
     testsupport/    per-test PostgreSQL schema, fixtures
 migrations/         plain SQL, embedded with go:embed
 deploy/nginx/       reverse proxy configuration
-docs/DECISIONS.md   assumptions and design decisions
 ```
 
 The layering is one-directional: handler calls service, service calls
@@ -298,7 +297,8 @@ contains no HIS fetch, so there is nowhere in the required API for it to sit.
 The client, the Hospital A adapter and the mock are complete and tested against
 each other, and the mock runs in compose with the application pointed at it —
 but no route calls it. Adding an ingest endpoint would have meant inventing a
-requirement. Reasoning in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+requirement. The full reasoning is in the design document accompanying this
+submission.
 
 **Search returns every match, unpaginated.** The brief asks for all matches. A
 hospital with a very large patient table would want a cursor here.
@@ -316,5 +316,5 @@ needs no tuning parameters justified to a reviewer.
 
 ## Assumptions and design decisions
 
-[`docs/DECISIONS.md`](docs/DECISIONS.md) records every place the brief left room
-for interpretation, the reading taken, and why.
+The design document accompanying this submission records every place the brief
+left room for interpretation, the reading taken, and why.
