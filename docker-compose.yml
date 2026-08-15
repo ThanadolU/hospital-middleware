@@ -26,6 +26,15 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+    # Without this, a database that dies — a crash, a Docker daemon restart, a
+    # laptop waking from sleep — stays down, while app keeps its own
+    # unless-stopped policy and restart-loops against a host that no longer
+    # resolves. Nginx then serves 504 indefinitely with nothing to recover it.
+    #
+    # unless-stopped rather than always, deliberately: a `docker compose stop`
+    # is a decision, and should be respected. That also means this policy is
+    # not exercised by `docker kill` — Docker treats that as a user stop.
+    restart: unless-stopped
 
   # One-shot. Applies migrations and inserts the hospitals, then exits 0.
   # Without it, POST /staff/create answers 400 "unknown hospital" on a fresh
