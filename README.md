@@ -9,7 +9,7 @@ Go 1.25 · Gin · PostgreSQL 15 · Nginx · Docker Compose
 ## Quickstart
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 curl localhost:8081/health
 ```
 
@@ -268,11 +268,33 @@ authoritative. The SQL is embedded, so the binary carries its own schema.
 
 ## Tests
 
+With a local PostgreSQL and Go toolchain:
+
 ```bash
 createdb hospital_middleware_test
 export TEST_DATABASE_URL='postgres://postgres:postgres@127.0.0.1:5432/hospital_middleware_test?sslmode=disable'
 go test ./... -race
 ```
+
+That DSN assumes a `postgres` role with password `postgres`. Several
+installations — Homebrew's, for one — create a role named after your operating
+system user instead, and connecting as `postgres` then fails with
+`role "postgres" does not exist`. Adjust the DSN to match your own role, or use
+the container route below, which needs neither Go nor PostgreSQL installed:
+
+```bash
+docker compose up -d
+docker compose exec -T db psql -U postgres -c 'CREATE DATABASE hospital_middleware_test'
+
+docker run --rm --network hospital-middleware_default \
+  -v "$PWD":/src -w /src \
+  -e TEST_DATABASE_URL='postgres://postgres:postgres@db:5432/hospital_middleware_test?sslmode=disable' \
+  golang:1.25-alpine go test ./...
+```
+
+The compose database is deliberately not published to the host — only Nginx is
+— so the tests reach it from inside the compose network rather than through a
+port on your machine.
 
 **Set `TEST_DATABASE_URL` before trusting a green run.** Without it the
 database-backed tests skip and every package still prints `ok`, so an unverified
