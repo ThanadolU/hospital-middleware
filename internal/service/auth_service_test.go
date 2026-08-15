@@ -43,8 +43,6 @@ func (f *fakeHospitals) FindByName(_ context.Context, name string) (*models.Hosp
 	return &hospital, nil
 }
 
-func (f *fakeHospitals) List(context.Context) ([]models.Hospital, error) { return nil, nil }
-
 type fakeStaff struct {
 	byUsername map[string]models.Staff
 	createErr  error

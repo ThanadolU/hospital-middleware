@@ -270,8 +270,21 @@ includes `migrations`, where the tests assert every migration has both
 directions and contiguous versions, and `internal/testsupport`, whose schema
 isolation the rest of the suite depends on.
 
-Coverage is 68.9% of statements overall: middleware 92.1%, auth 91.3%, his
-89.3%, handler 87.5%, routes 80.0%, service 75.6%, repository 70.3%.
+Coverage is **78.4% of statements**:
+
+```bash
+go test ./... -coverpkg=./...
+```
+
+`-coverpkg` matters here. Go's default counts only tests living in the *same*
+package, which reports 0% for code that other packages exercise heavily — the
+patient service, the hospital repository and the database pool all look
+untested without it, and the headline number lands ten points lower than
+reality.
+
+The only functions with no coverage are the five `main`/`run` entry points,
+which are process wiring exercised by `docker compose up` rather than by unit
+tests.
 
 Each test that needs PostgreSQL gets its own schema via `search_path`. Go runs
 packages in parallel, and they previously shared one database and truncated each

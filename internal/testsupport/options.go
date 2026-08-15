@@ -19,15 +19,6 @@ func WithPassportID(id string) PatientOption {
 	return func(p *models.Patient) { p.PassportID = id }
 }
 
-// WithPassportOnly clears the national id, which is the case v1's schema could
-// not represent more than once per hospital.
-func WithPassportOnly(passportID string) PatientOption {
-	return func(p *models.Patient) {
-		p.NationalID = ""
-		p.PassportID = passportID
-	}
-}
-
 func WithNamesEN(first, middle, last string) PatientOption {
 	return func(p *models.Patient) {
 		p.FirstNameEN, p.MiddleNameEN, p.LastNameEN = first, middle, last
@@ -50,10 +41,6 @@ func WithPhone(phone string) PatientOption {
 
 func WithEmail(email string) PatientOption {
 	return func(p *models.Patient) { p.Email = email }
-}
-
-func WithGender(gender string) PatientOption {
-	return func(p *models.Patient) { p.Gender = gender }
 }
 
 func mustDate(t *testing.T, iso string) time.Time {

@@ -22,9 +22,6 @@ type HospitalRepository interface {
 	// FindByName resolves a hospital case-insensitively, matching the unique
 	// index on lower(name).
 	FindByName(ctx context.Context, name string) (*models.Hospital, error)
-
-	// List returns all hospitals, so a caller can discover valid names.
-	List(ctx context.Context) ([]models.Hospital, error)
 }
 
 type hospitalRepository struct {
@@ -54,12 +51,4 @@ func (r *hospitalRepository) FindByName(ctx context.Context, name string) (*mode
 	default:
 		return nil, fmt.Errorf("repository: find hospital: %w", err)
 	}
-}
-
-func (r *hospitalRepository) List(ctx context.Context) ([]models.Hospital, error) {
-	hospitals := []models.Hospital{}
-	if err := r.db.WithContext(ctx).Order("name ASC").Find(&hospitals).Error; err != nil {
-		return nil, fmt.Errorf("repository: list hospitals: %w", err)
-	}
-	return hospitals, nil
 }
