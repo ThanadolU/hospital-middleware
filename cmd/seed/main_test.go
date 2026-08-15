@@ -101,3 +101,119 @@ func countHospitals(t *testing.T, db *sql.DB, name string) int {
 	).Scan(&count))
 	return count
 }
+
+// The demo patients exist so a reviewer's first search returns something. They
+// also encode the isolation guarantee, so these tests check the data actually
+// demonstrates what it claims to.
+
+func seedAllHospitals(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	for _, name := range defaultHospitals {
+		_, err := insertHospital(db, name)
+		require.NoError(t, err)
+	}
+}
+
+func TestInsertPatient_IsIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	seedAllHospitals(t, db)
+
+	patient := demoPatients[0]
+
+	inserted, err := insertPatient(db, patient)
+	require.NoError(t, err)
+	assert.True(t, inserted, "the first insert should have created the row")
+
+	inserted, err = insertPatient(db, patient)
+	require.NoError(t, err, "re-running the seed must not fail")
+	assert.False(t, inserted, "the second insert should have been a no-op")
+
+	var count int
+	require.NoError(t, db.QueryRow(
+		`SELECT count(*) FROM patients WHERE patient_hn = $1`, patient.PatientHN).Scan(&count))
+	assert.Equal(t, 1, count)
+}
+
+// The whole set has to apply cleanly, which is what `docker compose up` does.
+func TestDemoPatients_AllInsertAndAreValid(t *testing.T) {
+	db := newTestDB(t)
+	seedAllHospitals(t, db)
+
+	for _, patient := range demoPatients {
+		inserted, err := insertPatient(db, patient)
+		require.NoError(t, err, "%s failed to insert", patient.PatientHN)
+		assert.True(t, inserted, "%s was not inserted", patient.PatientHN)
+	}
+
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM patients`).Scan(&count))
+	assert.Equal(t, len(demoPatients), count)
+}
+
+// The point of the first two rows: the same person at both hospitals, so a
+// scoped search returns one of them rather than both.
+func TestDemoPatients_DemonstrateHospitalIsolation(t *testing.T) {
+	db := newTestDB(t)
+	seedAllHospitals(t, db)
+
+	for _, patient := range demoPatients {
+		_, err := insertPatient(db, patient)
+		require.NoError(t, err)
+	}
+
+	var total int
+	require.NoError(t, db.QueryRow(
+		`SELECT count(*) FROM patients WHERE national_id = $1`, "1103700123456").Scan(&total))
+	require.Equal(t, 2, total, "the same person should be recorded at both hospitals")
+
+	for _, tc := range []struct{ hospital, wantHN string }{
+		{"Hospital A", "HN-A-000123"},
+		{"Hospital B", "HN-B-000123"},
+	} {
+		var hn string
+		var scoped int
+		require.NoError(t, db.QueryRow(`
+			SELECT count(*), max(p.patient_hn) FROM patients p
+			JOIN hospitals h ON h.id = p.hospital_id
+			WHERE lower(h.name) = lower($1) AND p.national_id = $2`,
+			tc.hospital, "1103700123456").Scan(&scoped, &hn))
+
+		assert.Equal(t, 1, scoped, "%s should see exactly one", tc.hospital)
+		assert.Equal(t, tc.wantHN, hn)
+	}
+}
+
+// A patient with a passport and no national ID is the case the partial unique
+// index exists for; seeding one means the schema decision is exercised by the
+// demo data, not only by tests.
+func TestDemoPatients_IncludeAPassportOnlyRecord(t *testing.T) {
+	var found bool
+	for _, patient := range demoPatients {
+		if patient.NationalID == "" && patient.PassportID != "" {
+			found = true
+		}
+	}
+	assert.True(t, found, "the demo set should include a passport-only patient")
+}
+
+func TestSeedPatients_DefaultsOnAndIsOptOut(t *testing.T) {
+	tests := []struct {
+		env  string
+		want bool
+	}{
+		{"", true},
+		{"true", true},
+		{"anything else", true},
+		{"false", false},
+		{"FALSE", false},
+		{"  false  ", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv("SEED_PATIENTS", tc.env)
+			assert.Equal(t, tc.want, seedPatients())
+		})
+	}
+}

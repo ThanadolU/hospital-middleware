@@ -15,8 +15,15 @@ curl localhost:8081/health
 
 That is the whole setup. No `.env` to create, no SQL to run by hand: migrations
 are applied at boot and a one-shot `seed` container inserts Hospital A and
-Hospital B. Both are idempotent, so `docker compose down -v && docker compose up`
-brings the stack back from nothing in about twenty seconds.
+Hospital B along with four demo patients. Both are idempotent, so
+`docker compose down -v && docker compose up` brings the stack back from nothing
+in about twenty seconds.
+
+The demo patients are deliberate. Two of them are the **same person recorded at
+both hospitals**, identical in every searchable field, so the isolation
+guarantee is visible in a single search rather than only in the test suite. A
+third has a passport and no national ID — the case the partial unique index
+exists for. Set `SEED_PATIENTS=false` for an empty patient table.
 
 Nginx is the only service publishing a port (8081). The application, the
 database and the mock HIS are reachable only from inside the compose network.
@@ -35,10 +42,15 @@ TOKEN=$(curl -s -X POST localhost:8081/staff/login \
   -d '{"username":"somchai","password":"correct-horse-battery","hospital":"Hospital A"}' \
   | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 
-# 3. search
+# 3. search — returns Hospital A's Somchai, never Hospital B's
 curl -H "Authorization: Bearer $TOKEN" \
   'localhost:8081/patient/search?first_name=Somchai'
 ```
+
+That last call returns exactly one patient, `HN-A-000123`. Hospital B holds a
+record with the same name, national ID, passport, date of birth, phone and
+email — and a staff member at Hospital A cannot see it. Log in as a Hospital B
+staff member and the same search returns `HN-B-000123` instead.
 
 ## If you only have ten minutes
 
@@ -257,6 +269,7 @@ authoritative. The SQL is embedded, so the binary carries its own schema.
 ## Tests
 
 ```bash
+createdb hospital_middleware_test
 export TEST_DATABASE_URL='postgres://postgres:postgres@127.0.0.1:5432/hospital_middleware_test?sslmode=disable'
 go test ./... -race
 ```
@@ -270,7 +283,7 @@ includes `migrations`, where the tests assert every migration has both
 directions and contiguous versions, and `internal/testsupport`, whose schema
 isolation the rest of the suite depends on.
 
-Coverage is **78.4% of statements**:
+Coverage is **77.3% of statements**:
 
 ```bash
 go test ./... -coverpkg=./...
@@ -300,6 +313,7 @@ other's fixtures — tests passed alone and failed together.
 | `JWT_TTL_HOURS` | no | `12` | ignored unless a positive integer |
 | `HIS_HOSPITAL_A_BASE_URL` | for the HIS client | — | compose points this at `mock-his` |
 | `SEED_HOSPITALS` | no | `Hospital A,Hospital B` | comma-separated |
+| `SEED_PATIENTS` | no | `true` | set `false` for an empty patient table |
 | `TEST_DATABASE_URL` | tests only | — | see above |
 
 See [`example.env`](example.env). A service that boots with a default secret is
